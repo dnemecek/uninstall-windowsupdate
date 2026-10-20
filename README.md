@@ -25,6 +25,32 @@ Po odinstalaci DISMem není KB do restartu nabízena, proto `-HideOnly` spusťte
 Pozor: odinstalace LCU vrací bezpečnostní opravy. Aktualizaci potom skryjte (`-Hide`) nebo pozastavte,
 jinak ji Windows Update nainstaluje znovu. Pod WSUS / WUfB blokujte raději na serveru.
 
+## Parametry
+
+| Parametr | Význam |
+|---|---|
+| `-List` | Jen výpis (tabulka), žádné změny. |
+| `-Since <datum>` | Aktualizace nainstalované od data (výchozí před 30 dny), např. `2026-10-15`. |
+| `-Filter <wildcard>` | Filtr na název nebo KB, např. `"*Cumulative*"`, `"KB50*"`. |
+| `-Category <wildcard>` | Filtr na druh (`lcu`, `update`, `driver`, `definition`, `ssu`, `package`, `other`) nebo kategorii WU (`Drivers`). |
+| `-KB <čísla>` | KB k odinstalaci / skrytí, s prefixem `KB` i bez; lze více (`-KB 5127648,5127690`). |
+| `-Hide` | Po odinstalaci navíc skryje KB ve Windows Update. |
+| `-HideOnly` | Jen skryje KB, bez odinstalace (po restartu, který odinstalaci dokončil). |
+| `-DryRun` | Simulace: jen vypíše plánované příkazy. |
+| `-Force` | Bez dotazů (dávka, Ansible); vyžaduje `-KB`. |
+| `-Json` | Výstup jako JSON místo tabulky a shrnutí. |
+| `-LogPath <cesta>` | Vlastní log (výchozí `logs\Uninstall-WindowsUpdate.log`). |
+
+Odinstalace a zákaz opětovné instalace (DISM odinstalaci dokončí až restartem, do té doby KB nejde skrýt):
+
+```
+Uninstall-WindowsUpdate.cmd -KB 5127648 -Force              # 1. odinstalace
+                                                            # 2. restart
+Uninstall-WindowsUpdate.cmd -KB 5127648 -HideOnly -Force    # 3. skrytí ve Windows Update
+```
+
+Nápověda: `powershell -NoProfile -Command "Get-Help .\Uninstall-WindowsUpdate.ps1 -Full"`.
+
 ## Instalace
 
 ```
