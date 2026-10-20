@@ -1,0 +1,18 @@
+# secrets / environment
+.env
+*.key
+*.pem
+*.cred
+
+# workspace (lokalni soubory mimo git)
+local/
+.claude/
+CLAUDE.md
+
+# runtime
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
