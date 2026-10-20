@@ -2,7 +2,7 @@
 
 | # | Ukol | Stav |
 |---|---|---|
-| 1 | Test na testovacim NTB: `-List -Since 2026-10-15`, `-KB 5127648 -Force -DryRun` | ceka |
+| 1 | Test na testovacim NTB: `-List -Since 2026-10-15`, `-KB 5127648 -Force -DryRun` | hotovo 2026-10-20 |
 | 2 | Overit na Windows: mapovani KB -> RollupFix (overeno 2026-10-20), exit kod 2359303, `IsHidden` pod WSUS | castecne |
 | 3 | Ostra odinstalace KB5127648 na NTB, restart, overeni pripojeni 802.1X | hotovo 2026-10-20 (802.1X funguje) |
 | 4 | Adversarialni revize kodu vetve pred PR do `main` | hotovo (c25ecdf), opravy 1-6 v teto vetvi |
