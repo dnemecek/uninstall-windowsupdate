@@ -42,14 +42,19 @@
 .PARAMETER HideOnly
     Jen skryje vybrane KB, bez odinstalace (typicky po restartu, ktery dokoncil odinstalaci).
 
-.PARAMETER LogPath
-    Cesta k log souboru. Vychozi: logs\Uninstall-WindowsUpdate.log vedle skriptu.
+.PARAMETER LogRoot
+    Lokalni koren pro logy. Log: <LogRoot>\Logs\Uninstall-WindowsUpdate.log (stderr z .cmd do .err vedle).
+    Vychozi: %ProgramData%\Scripts. Lokalni i pri behu z NETLOGONu, kam pocitac zapisovat nesmi.
 
 .PARAMETER DryRun
     Simulace bez provedeni zmen; planovane prikazy jdou do logu a do planned.
 
 .PARAMETER Force
     Bez potvrzeni (Ansible / davka). Vyzaduje -KB.
+
+.PARAMETER Silent
+    Pro GPO Startup Script: zadny vystup na konzoli (ani tabulka, ani JSON), jen log; bez dotazu.
+    Chova se jako -Force (vyzaduje -KB, jinak exit 2 jen do logu).
 
 .EXAMPLE
     .\Uninstall-WindowsUpdate.ps1 -List -Since 2026-10-01
@@ -65,6 +70,10 @@
 .EXAMPLE
     .\Uninstall-WindowsUpdate.ps1 -KB 5127648 -HideOnly -Force
     # po restartu: skryti KB, aby ji Windows Update znovu nenainstaloval
+
+.EXAMPLE
+    \\<domena>\netlogon\scripts\Uninstall-WindowsUpdate.cmd -KB 5127648 -Hide -Force -Silent
+    # GPO Startup Script: 1. start odinstaluje, 2. start skryje, dalsi starty = uz skryta (OK)
 
 .NOTES
     Nazev:     Uninstall-WindowsUpdate.ps1
@@ -91,14 +100,21 @@ param (
     [string[]]$Category = '*',
     [switch]$Hide,
     [switch]$HideOnly,
-    [string]$LogPath,
+    [string]$LogRoot = "$env:ProgramData\Scripts",
     [switch]$DryRun,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Silent
 )
 
 $ErrorActionPreference = 'Stop'; $startTime = Get-Date; $scriptVersion = '1.0.0'
-if (-not $LogPath) { $LogPath = Join-Path $PSScriptRoot 'logs\Uninstall-WindowsUpdate.log' }
-. (Join-Path $PSScriptRoot 'common\Add-Log.ps1')
+# Konvence GPO skriptu: <LogRoot>\Logs\<scriptName>.log, .err plni launcher; vzdy lokalne, i z NETLOGONu.
+$LogPath = Join-Path $LogRoot 'Logs\Uninstall-WindowsUpdate.log'
+# NETLOGON ma sdilene moduly v scripts\modules\, git repozitar v submodulu common\.
+$addLog = Join-Path $PSScriptRoot 'modules\Add-Log.ps1'
+if (-not (Test-Path $addLog)) { $addLog = Join-Path $PSScriptRoot 'common\Add-Log.ps1' }
+. $addLog
+# -Silent (GPO) je davkovy rezim bez konzole: bez dotazu jako -Force; -Json vypne tabulku, Write-Result pak nic.
+if ($Silent) { $Force = [switch]$true; $Json = [switch]$true }
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
     Add-Log -Message $Message -Level $Level -LogFile $LogPath -StartTime $startTime }
@@ -106,7 +122,7 @@ function Add-Warning { param([string]$Msg, [string]$Level = 'WARNING') $result.w
 
 $result = [ordered]@{
     changed = $false; dry_run = [bool]$DryRun; elevated = $false; since = $Since.ToString('s'); mapped = $false
-    selected = @(); planned = @(); removed = @(); failed = @(); skipped = @(); hidden = @()
+    selected = @(); planned = @(); removed = @(); failed = @(); skipped = @(); hidden = @(); not_found = @()
     reboot_required = $false; warnings = @(); msg = ''; log = $LogPath; wu_source = ''; wu_policy = @{}
 }
 
@@ -116,8 +132,9 @@ function Test-Elevated {
 
 function Write-Result {
     # Vysledek na stdout: s -Json JSON pro Ansible, jinak citelne shrnuti pro cloveka (jako vypis -List).
+    if ($Silent) { return }
     if ($Json) { $result | ConvertTo-Json -Depth 5; return }
-    foreach ($k in 'planned', 'removed', 'failed', 'skipped', 'hidden', 'warnings') {
+    foreach ($k in 'planned', 'removed', 'failed', 'skipped', 'hidden', 'not_found', 'warnings') {
         $result[$k] | ForEach-Object { Write-Host ("{0,-9} {1}" -f $k, $_) } }
     Write-Host "$($result.msg) | wu: $($result.wu_source) | reboot: $($result.reboot_required) | log: $($result.log)"
 }
@@ -192,14 +209,17 @@ function Get-PackageMap {
     param([datetime]$From)
     # Jen aktualizace (SecurityUpdate, Update, Hotfix, ...): LCU pri instalaci preservisuje i Features on Demand
     # (RSAT, jazyky, ovladace) s novym InstallTime; ty nejsou aktualizace a jejich odebrani by odebralo funkci OS.
-    $packages = Get-WindowsPackage -Online | Where-Object { $_.PackageState -eq 'Installed' -and
-        [datetime]$_.InstallTime -ge $From -and "$($_.ReleaseType)" -match 'Update|Hotfix|ServicePack' }
+    # UninstallPending = DISM odebral balicek (3010), dokonci se az restartem; nesmi skoncit na wusa.
+    $packages = Get-WindowsPackage -Online | Where-Object {
+        "$($_.PackageState)" -in 'Installed', 'UninstallPending' -and [datetime]$_.InstallTime -ge $From -and
+        "$($_.ReleaseType)" -match 'Update|Hotfix|ServicePack' }
     foreach ($p in $packages) {
         $detail = Get-WindowsPackage -Online -PackageName $p.PackageName
         $text = ($detail.PSObject.Properties | ForEach-Object { "$($_.Value)" }) -join ' '
         $kbNum = if ($text -match '(?:KB\s*|kbid=|/help/)(\d+)') { $Matches[1] } else { $null }
         [pscustomobject]@{ name = $p.PackageName; kb = $kbNum; ssu = ($p.PackageName -match 'ServicingStack')
-            date = ([datetime]$p.InstallTime).ToString('yyyy-MM-dd HH:mm'); description = $detail.Description }
+            date = ([datetime]$p.InstallTime).ToString('yyyy-MM-dd HH:mm'); description = $detail.Description
+            pending = ("$($p.PackageState)" -eq 'UninstallPending') }
     }
 }
 
@@ -234,7 +254,11 @@ try {
     Write-Log "=== Uninstall-WindowsUpdate v$scriptVersion start dry_run=$DryRun list=$List since=$Since cat=$Category"
     if ($Since -gt (Get-Date)) { throw "Since ($($result.since)) is in the future." }
     # Pres .cmd (powershell -File) prijde "-KB 1,2" jako jeden retezec, proto deleni na carkach a mezerach.
-    $kbWanted = @($KB -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { $_ -replace '^KB', '' })
+    $kbWanted = @($KB -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { $_ -replace '^KB', '' } |
+        Select-Object -Unique)
+    # Kategorie maji mezery ("Security Updates"), proto deleni jen na carkach.
+    $catWanted = @($Category -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if (-not $catWanted) { $catWanted = '*' }
     if ($badKb = @($kbWanted -notmatch '^\d+$')) { throw "Invalid KB value(s): $($badKb -join ', ')" }
     $result.elevated = Test-Elevated
     $result.wu_source = Get-WuSource; Write-Log "WU source: $($result.wu_source)"
@@ -259,9 +283,21 @@ try {
             $items += [pscustomobject]@{ date = $p.date; kb = $p.kb; kind = $kind; categories = @()
                 uninstallable = -not $p.ssu; method = $method; package = $p.name; title = $title }
         }
+        $pendingNames = @($packages | Where-Object { $_.pending } | ForEach-Object { $_.name })
+        foreach ($i in $items | Where-Object { $_.package -and $pendingNames -contains $_.package }) {
+            $i.uninstallable = $false; $i.method = 'pending reboot'; $result.reboot_required = $true
+            Add-Warning "KB$($i.kb) $($i.package): uninstall pending reboot"
+        }
     } else { Add-Warning 'Not elevated: CBS package mapping skipped, history only (removal would use wusa).' }
+    # Historie WU drzi i uz odinstalovane KB (Operation=1 zustava); bez CBS balicku rozhoduje Get-HotFix
+    # (funguje i bez elevace). MSRT (KB890830) v Get-HotFix neni a odinstalovat nejde, takze spravne vypadne.
+    $hotfixes = @(Get-HotFix -ErrorAction SilentlyContinue | ForEach-Object { $_.HotFixID -replace '^KB', '' })
+    $unmapped = @($items | Where-Object { $_.kind -in 'update', 'lcu' -and -not $_.package })
+    foreach ($i in $unmapped | Where-Object { $hotfixes -notcontains $_.kb }) {
+        $i.uninstallable = $false; $i.method = 'not installed'
+    }
     $items = @($items | Where-Object { $_.title -like $Filter -or "KB$($_.kb)" -like $Filter } |
-        Where-Object { $names = @($_.kind) + $_.categories; $Category | Where-Object { $names -like $_ } } |
+        Where-Object { $names = @($_.kind) + $_.categories; $catWanted | Where-Object { $names -like $_ } } |
         Sort-Object date -Descending)
 
     # ---------------------------------------------------------------- list
@@ -280,7 +316,10 @@ try {
     # ---------------------------------------------------------------- selection
     if ($kbWanted) {
         $selected = @($items | Where-Object { $_.kb -and $kbWanted -contains $_.kb })
-        foreach ($k in $kbWanted | Where-Object { $items.kb -notcontains $_ }) { Add-Warning "KB$k not found." }
+        # Nenalezena / uz odinstalovana KB neni chyba (exit 0): GPO spousti stejne parametry pri kazdem startu.
+        $installed = @($items | Where-Object { $_.method -ne 'not installed' } | ForEach-Object { $_.kb })
+        $result.not_found = @($kbWanted | Where-Object { $installed -notcontains $_ } | ForEach-Object { "KB$_" })
+        if ($result.not_found) { Write-Log "Not found / not installed: $($result.not_found -join ', ')" 'WARNING' }
     } elseif (-not $Force) {
         if ($items.Count -eq 0) { Write-Host "No updates since $($result.since) match filter '$Filter'."; exit 0 }
         Write-Host "`nUpdates installed since $($result.since) (filter: $Filter)`n------------------------------"
@@ -290,8 +329,9 @@ try {
         }
         $answer = Read-Host "`nNumbers to process (e.g. 1,3,5) or Enter to quit"
         if (-not $answer.Trim()) { Write-Log 'Nothing selected'; exit 0 }
-        $idx = $answer -split '[,\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ - 1 } |
-            Where-Object { $_ -ge 0 -and $_ -lt $items.Count } | Sort-Object -Unique
+        $idx = @($answer -split '[,\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ - 1 } |
+            Where-Object { $_ -ge 0 -and $_ -lt $items.Count } | Sort-Object -Unique)
+        if (-not $idx.Count) { Write-Log 'Nothing selected'; exit 0 }
         $selected = @($items[$idx])
     } else { Exit-WithResult '-Force requires -KB.' 2 'ERROR' }
 
@@ -302,7 +342,10 @@ try {
     }
     $selected = @($selected | Where-Object { $_.uninstallable })
     $result.selected = @($selected | ForEach-Object { "KB$($_.kb) [$($_.method)] $($_.title)" })
-    if ($selected.Count -eq 0 -and -not ($HideOnly -and $hideKbs)) { Exit-WithResult 'Nothing to uninstall or hide.' 0 }
+    # S -Hide se skryva i bez odinstalace: po restartu uz KB neni co odebrat, ale skryt ji je potreba (GPO 2. start).
+    if ($selected.Count -eq 0 -and -not (($Hide -or $HideOnly) -and $hideKbs)) {
+        Exit-WithResult 'Nothing to uninstall or hide.' 0
+    }
     if (-not $result.elevated -and -not $DryRun) {
         Exit-WithResult 'Update removal/hiding requires elevation (Administrator).' 3 'ERROR'
     }
@@ -338,7 +381,7 @@ try {
     if ($Hide -or $HideOnly) { Hide-WindowsUpdate -KbList $hideKbs }
 
     $result.msg = "removed=$($result.removed.Count) failed=$($result.failed.Count) hidden=$($result.hidden.Count)" +
-        " planned=$($result.planned.Count)"
+        " planned=$($result.planned.Count) not_found=$($result.not_found.Count)"
     Write-Log "=== done changed=$($result.changed) $($result.msg) reboot_required=$($result.reboot_required)"
     Write-Result; exit [int]($result.failed.Count -gt 0)
 }
