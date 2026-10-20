@@ -33,7 +33,7 @@
     Cisla KB k odinstalaci / skryti, s prefixem KB i bez (5127648 / KB5127648). Lze vice hodnot.
 
 .PARAMETER Category
-    Wildcard na kind polozky (lcu, update, driver, definition, ssu, package) nebo na nazev kategorie
+    Wildcard na kind polozky (lcu, update, driver, definition, ssu, package, other) nebo na nazev kategorie
     z historie WU (napr. "Security Updates", "Drivers"). Lze vice hodnot. Vychozi: vse.
 
 .PARAMETER Hide
@@ -159,7 +159,8 @@ function Get-UpdateHistory {
         $cats = @($e.Categories | ForEach-Object { $_.Name })
         $kbNum = if ($e.Title -match 'KB(\d+)') { $Matches[1] } else { $null }
         $kind, $method = if ($e.Title -match 'Defender|Security Intelligence|KB2267602') { 'definition', 'none' }
-            elseif (-not $kbNum -or $cats -match 'Drivers') { 'driver', 'rollback via Device Manager / pnputil' }
+            elseif ($cats -match 'Drivers') { 'driver', 'rollback via Device Manager / pnputil' }
+            elseif (-not $kbNum) { 'other', 'none' }
             elseif ($e.Title -match 'Servicing Stack') { 'ssu', 'none (SSU cannot be removed)' }
             elseif ($e.Title -match 'Cumulative Update for Windows') { 'lcu', 'wusa' }
             else { 'update', 'wusa' }
@@ -183,8 +184,10 @@ function Get-PackageMap {
         Kontrola: kazdy vraceny objekt ma name a ssu; kb muze byt $null (balicek bez nalezene KB).
     #>
     param([datetime]$From)
-    $packages = Get-WindowsPackage -Online |
-        Where-Object { $_.PackageState -eq 'Installed' -and [datetime]$_.InstallTime -ge $From }
+    # Jen aktualizace (SecurityUpdate, Update, Hotfix, ...): LCU pri instalaci preservisuje i Features on Demand
+    # (RSAT, jazyky, ovladace) s novym InstallTime; ty nejsou aktualizace a jejich odebrani by odebralo funkci OS.
+    $packages = Get-WindowsPackage -Online | Where-Object { $_.PackageState -eq 'Installed' -and
+        [datetime]$_.InstallTime -ge $From -and "$($_.ReleaseType)" -match 'Update|Hotfix|ServicePack' }
     foreach ($p in $packages) {
         $detail = Get-WindowsPackage -Online -PackageName $p.PackageName
         $text = ($detail.PSObject.Properties | ForEach-Object { "$($_.Value)" }) -join ' '
@@ -260,8 +263,12 @@ try {
         if ($Json) { $result | ConvertTo-Json -Depth 5; exit 0 }
         # Tabulka pro cloveka (jako Uninstall-MsiPackage); JSON zustava pro Ansible pres -Json.
         Write-Host "`n$($result.msg) (wu_source: $($result.wu_source), elevated: $($result.elevated))"
-        $items | Format-Table date, @{ n = 'KB'; e = { if ($_.kb) { "KB$($_.kb)" } } }, kind, uninstallable, method,
-            title -AutoSize | Out-String -Width 220 | Write-Host
+        # Uzka tabulka: sloupec remove = metoda odinstalace nebo '-', titul zkraceny na 80 znaku (cely je v -Json).
+        $short = { if ($_.title.Length -gt 80) { $_.title.Substring(0, 77) + '...' } else { $_.title } }
+        $items | Format-Table date, @{ n = 'KB'; e = { if ($_.kb) { "KB$($_.kb)" } } }, kind,
+            @{ n = 'remove'; e = { if ($_.uninstallable) { $_.method } else { '-' } } },
+            @{ n = 'title'; e = $short } -AutoSize |
+            Out-String -Width 160 | Write-Host
         $result.warnings | ForEach-Object { Write-Host "WARNING: $_" }
         exit 0
     }
