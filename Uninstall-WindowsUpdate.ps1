@@ -14,14 +14,14 @@
     - -Hide / -HideOnly: skryti aktualizace ve WUA na klientovi, aby se znovu nenainstalovala.
     - Ovladace, definice Defenderu a SSU se jen vypisuji, neodinstaluji se.
     - Idempotentni (2359303 = uz odinstalovano => OK; uz skryta => OK).
-    - Ansible-ready: stdout = pouze JSON, log do souboru.
+    - Vystup: tabulka / citelne shrnuti; s -Json pouze JSON na stdout (Ansible-ready), log do souboru.
       Vyjimka: interaktivni rezim (bez -Force) pise vyber/dotazy na konzoli.
 
 .PARAMETER List
     Pouze vypise aktualizace jako tabulku (s -Json jako JSON). Zadne zmeny.
 
 .PARAMETER Json
-    Vystup -List jako JSON misto tabulky (Ansible).
+    Vystup jako JSON (Ansible) misto tabulky a citelneho shrnuti. Plati pro vsechny rezimy.
 
 .PARAMETER Since
     Pocatecni datum instalace. Vychozi: pred 30 dny. Nesmi byt v budoucnosti.
@@ -96,8 +96,7 @@ param (
     [switch]$Force
 )
 
-$ErrorActionPreference = 'Stop'; $startTime = Get-Date
-$scriptVersion = '1.0.0'
+$ErrorActionPreference = 'Stop'; $startTime = Get-Date; $scriptVersion = '1.0.0'
 if (-not $LogPath) { $LogPath = Join-Path $PSScriptRoot 'logs\Uninstall-WindowsUpdate.log' }
 . (Join-Path $PSScriptRoot 'common\Add-Log.ps1')
 function Write-Log {
@@ -112,14 +111,21 @@ $result = [ordered]@{
 }
 
 function Test-Elevated {
-    $principal = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
-    $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    # RID 544 = BUILTIN\Administrators; nazev skupiny je lokalizovany (cs: Administratori), RID ne.
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent(); ([Security.Principal.WindowsPrincipal]$id).IsInRole(544) }
+
+function Write-Result {
+    # Vysledek na stdout: s -Json JSON pro Ansible, jinak citelne shrnuti pro cloveka (jako vypis -List).
+    if ($Json) { $result | ConvertTo-Json -Depth 5; return }
+    foreach ($k in 'planned', 'removed', 'failed', 'skipped', 'hidden', 'warnings') {
+        $result[$k] | ForEach-Object { Write-Host ("{0,-9} {1}" -f $k, $_) } }
+    Write-Host "$($result.msg) | wu: $($result.wu_source) | reboot: $($result.reboot_required) | log: $($result.log)"
 }
 
 function Exit-WithResult {
     # Spolecny konec pro predcasne vystupy: warning do JSON i logu, JSON na stdout, exit kod.
     param([string]$Message, [int]$Code, [string]$Level = 'WARNING')
-    Add-Warning $Message $Level; $result.msg = $Message; $result | ConvertTo-Json -Depth 4; exit $Code
+    Add-Warning $Message $Level; $result.msg = $Message; Write-Result; exit $Code
 }
 
 function Get-WuSource {
@@ -260,17 +266,14 @@ try {
     # ---------------------------------------------------------------- list
     if ($List) {
         $result.updates = $items; $result.msg = "$($items.Count) updates since $($result.since)"; Write-Log $result.msg
-        if ($Json) { $result | ConvertTo-Json -Depth 5; exit 0 }
-        # Tabulka pro cloveka (jako Uninstall-MsiPackage); JSON zustava pro Ansible pres -Json.
-        Write-Host "`n$($result.msg) (wu_source: $($result.wu_source), elevated: $($result.elevated))"
+        # Tabulka pro cloveka (jako Uninstall-MsiPackage); s -Json jen JSON z Write-Result.
         # Uzka tabulka: sloupec remove = metoda odinstalace nebo '-', titul zkraceny na 80 znaku (cely je v -Json).
         $short = { if ($_.title.Length -gt 80) { $_.title.Substring(0, 77) + '...' } else { $_.title } }
-        $items | Format-Table date, @{ n = 'KB'; e = { if ($_.kb) { "KB$($_.kb)" } } }, kind,
+        if (-not $Json) { $items | Format-Table date, @{ n = 'KB'; e = { if ($_.kb) { "KB$($_.kb)" } } }, kind,
             @{ n = 'remove'; e = { if ($_.uninstallable) { $_.method } else { '-' } } },
             @{ n = 'title'; e = $short } -AutoSize |
-            Out-String -Width 160 | Write-Host
-        $result.warnings | ForEach-Object { Write-Host "WARNING: $_" }
-        exit 0
+            Out-String -Width 160 | Write-Host }
+        Write-Result; exit 0
     }
 
     # ---------------------------------------------------------------- selection
@@ -336,10 +339,10 @@ try {
     $result.msg = "removed=$($result.removed.Count) failed=$($result.failed.Count) hidden=$($result.hidden.Count)" +
         " planned=$($result.planned.Count)"
     Write-Log "=== done changed=$($result.changed) $($result.msg) reboot_required=$($result.reboot_required)"
-    $result | ConvertTo-Json -Depth 4; exit [int]($result.failed.Count -gt 0)
+    Write-Result; exit [int]($result.failed.Count -gt 0)
 }
 catch {
     Write-Log "FATAL: $($_.Exception.Message)" -Level ERROR; Write-Log "Stack: $($_.ScriptStackTrace)" -Level ERROR
     $result.error = $_.Exception.Message; $result.msg = $result.error
-    $result | ConvertTo-Json -Depth 4; exit 1
+    Write-Result; exit 1
 }

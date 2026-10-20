@@ -11,6 +11,7 @@ Uninstall-WindowsUpdate.cmd -List -Since 2026-10-01          # výpis (tabulka);
 Uninstall-WindowsUpdate.cmd -Filter "*Cumulative*"           # interaktivní výběr + odinstalace
 Uninstall-WindowsUpdate.cmd -Category lcu -List              # filtr podle kind / kategorie WU (např. Drivers)
 Uninstall-WindowsUpdate.cmd -KB 5127648 -Force -DryRun       # dávkově, jen plán příkazů
+Uninstall-WindowsUpdate.cmd -KB 5127648 -Force -Json         # výstup jako JSON (Ansible), platí pro všechny režimy
 Uninstall-WindowsUpdate.cmd -KB KB5127648 -Force             # dávkově, bez dotazů
 Uninstall-WindowsUpdate.cmd -KB 5127648 -Hide -Force         # odinstalace + skrytí ve Windows Update
 Uninstall-WindowsUpdate.cmd -KB 5127648 -HideOnly -Force     # jen skrytí (typicky po restartu)
