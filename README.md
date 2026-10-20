@@ -63,9 +63,12 @@ Soubory do `\\<domena>\netlogon\scripts\`:
 Uninstall-WindowsUpdate.cmd
 Uninstall-WindowsUpdate.ps1
 modules\Add-Log.ps1          (z common\)
+modules\Lock-Script.psm1     (z common\)
 ```
 
 První start odinstaluje, druhý skryje, další starty skončí OK beze změny (už skrytá).
+Další starty bez práce končí hned (Get-HotFix + značka `<LogRoot>\State\KB<n>.hidden`, bez online scanu);
+zámek `<LogRoot>\Locks` brání souběžnému běhu.
 Log: `<LogRoot>\Logs\Uninstall-WindowsUpdate.log` + `.err` (stderr). KB, která není nainstalovaná,
 je v `not_found` (exit 0).
 

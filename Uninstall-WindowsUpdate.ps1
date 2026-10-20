@@ -109,10 +109,12 @@ param (
 $ErrorActionPreference = 'Stop'; $startTime = Get-Date; $scriptVersion = '1.0.0'
 # Konvence GPO skriptu: <LogRoot>\Logs\<scriptName>.log, .err plni launcher; vzdy lokalne, i z NETLOGONu.
 $LogPath = Join-Path $LogRoot 'Logs\Uninstall-WindowsUpdate.log'
-# NETLOGON ma sdilene moduly v scripts\modules\, git repozitar v submodulu common\.
-$addLog = Join-Path $PSScriptRoot 'modules\Add-Log.ps1'
-if (-not (Test-Path $addLog)) { $addLog = Join-Path $PSScriptRoot 'common\Add-Log.ps1' }
-. $addLog
+# NETLOGON ma sdilene moduly v scripts\modules\, git repozitar v submodulu common\; hledame per soubor.
+function Find-Lib {
+    param([string]$Name)
+    $p = Join-Path $PSScriptRoot "modules\$Name"
+    if (Test-Path $p) { $p } else { Join-Path $PSScriptRoot "common\$Name" } }
+. (Find-Lib 'Add-Log.ps1'); Import-Module (Find-Lib 'Lock-Script.psm1') -Force
 # -Silent (GPO) je davkovy rezim bez konzole: bez dotazu jako -Force; -Json vypne tabulku, Write-Result pak nic.
 if ($Silent) { $Force = [switch]$true; $Json = [switch]$true }
 function Write-Log {
@@ -235,6 +237,7 @@ function Hide-WindowsUpdate {
     #>
     param([string[]]$KbList)
     $src = $result.wu_source; Write-Log "WU scan for offered updates ($src) start"
+    if (-not $DryRun) { $null = New-Item $stateDir -ItemType Directory -Force }
     $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
     $offered = @($searcher.Search('IsInstalled=0 and IsHidden=0 or IsInstalled=0 and IsHidden=1').Updates)
     Write-Log "WU scan done: $($offered.Count) updates offered"
@@ -243,9 +246,12 @@ function Hide-WindowsUpdate {
         $msg = "KB$k not offered by $src; if uninstall is pending reboot, run -Hide again after reboot"
         if (-not $hits) { Add-Warning $msg; continue }
         foreach ($u in $hits) {
-            if ($u.IsHidden) { $result.hidden += "KB$k"; Write-Log "Already hidden KB$k"; continue }
-            if ($DryRun) { $result.planned += "hide KB$k"; Write-Log "DRY-RUN: hide KB$k ($($u.Title))"; continue }
-            $u.IsHidden = $true; $result.hidden += "KB$k"; $result.changed = $true; Write-Log "Hidden KB$k $($u.Title)"
+            if ($u.IsHidden) { Write-Log "Already hidden KB$k" }
+            elseif ($DryRun) { $result.planned += "hide KB$k"; Write-Log "DRY-RUN: hide KB$k"; continue }
+            else { $u.IsHidden = $true; $result.changed = $true; Write-Log "Hidden KB$k $($u.Title)" }
+            $result.hidden += "KB$k"
+            # Znacka pro rychly konec dalsich startu (GPO): tam se pak neceka na online scan WU.
+            if (-not $DryRun) { Set-Content (Join-Path $stateDir "KB$k.hidden") (Get-Date -Format s) }
         }
     }
 }
@@ -260,6 +266,19 @@ try {
     $catWanted = @($Category -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if (-not $catWanted) { $catWanted = '*' }
     if ($badKb = @($kbWanted -notmatch '^\d+$')) { throw "Invalid KB value(s): $($badKb -join ', ')" }
+    # Exit-ScriptLock netreba: zamek drzi otevreny FileStream a uvolni se s koncem procesu i pri exit z hloubky.
+    if (-not (Enter-ScriptLock -LockName 'Uninstall-WindowsUpdate' -LockFolder (Join-Path $LogRoot 'Locks'))) {
+        Exit-WithResult 'Another instance is running, exit' 0 'INFO' }
+    # Rychly konec (GPO pousti skript pri kazdem startu, inventar a online scan WU trvaji ~minutu): KB je hotova,
+    # kdyz neni v Get-HotFix a (bez -Hide nebo uz ma znacku State\KB<n>.hidden). Po reinstalaci ji Get-HotFix
+    # vidi a bezi plny beh, znacka se ignoruje. Prazdny Get-HotFix (chyba WMI) rychly konec nepovoli.
+    $hotfixes = @(Get-HotFix -ErrorAction SilentlyContinue | ForEach-Object { $_.HotFixID -replace '^KB', '' })
+    $stateDir = Join-Path $LogRoot 'State'
+    $done = @($kbWanted | Where-Object { $hotfixes -notcontains $_ -and
+        (-not ($Hide -or $HideOnly) -or (Test-Path (Join-Path $stateDir "KB$_.hidden"))) })
+    if ($kbWanted -and $hotfixes -and -not $List -and $done.Count -eq $kbWanted.Count) {
+        $result.not_found = @($done | ForEach-Object { "KB$_" })
+        Exit-WithResult "Nothing to do: KB$($done -join ', KB') already removed/hidden" 0 'INFO' }
     $result.elevated = Test-Elevated
     $result.wu_source = Get-WuSource; Write-Log "WU source: $($result.wu_source)"
 
@@ -290,8 +309,7 @@ try {
         }
     } else { Add-Warning 'Not elevated: CBS package mapping skipped, history only (removal would use wusa).' }
     # Historie WU drzi i uz odinstalovane KB (Operation=1 zustava); bez CBS balicku rozhoduje Get-HotFix
-    # (funguje i bez elevace). MSRT (KB890830) v Get-HotFix neni a odinstalovat nejde, takze spravne vypadne.
-    $hotfixes = @(Get-HotFix -ErrorAction SilentlyContinue | ForEach-Object { $_.HotFixID -replace '^KB', '' })
+    # (funguje i bez elevace, $hotfixes vyse). MSRT (KB890830) v Get-HotFix neni a odinstalovat nejde, spravne vypadne.
     $unmapped = @($items | Where-Object { $_.kind -in 'update', 'lcu' -and -not $_.package })
     foreach ($i in $unmapped | Where-Object { $hotfixes -notcontains $_.kb }) {
         $i.uninstallable = $false; $i.method = 'not installed'
