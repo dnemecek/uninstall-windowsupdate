@@ -22,10 +22,9 @@ Pozor: odinstalace LCU vrací bezpečnostní opravy. KB potom skryjte (`-HideOnl
 Windows Update nainstaluje znovu. Pod WSUS / WUfB blokujte raději na serveru.
 
 ## Instalace
-
 `git clone --recurse-submodules https://github.com/dnemecek/uninstall-windowsupdate.git`
 
-Bez `--recurse-submodules` zůstane `common/` prázdná. Git na Windows: `winget install --id Git.Git -e --source winget`.
+Bez `--recurse-submodules` zůstane `common/` prázdná. Git: `winget install --id Git.Git -e --source winget`.
 
 ## Struktura
 
