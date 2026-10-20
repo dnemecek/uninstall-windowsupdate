@@ -233,7 +233,8 @@ function Hide-WindowsUpdate {
 try {
     Write-Log "=== Uninstall-WindowsUpdate v$scriptVersion start dry_run=$DryRun list=$List since=$Since cat=$Category"
     if ($Since -gt (Get-Date)) { throw "Since ($($result.since)) is in the future." }
-    $kbWanted = @($KB | ForEach-Object { $_.Trim() -replace '^KB', '' })
+    # Pres .cmd (powershell -File) prijde "-KB 1,2" jako jeden retezec, proto deleni na carkach a mezerach.
+    $kbWanted = @($KB -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { $_ -replace '^KB', '' })
     if ($badKb = @($kbWanted -notmatch '^\d+$')) { throw "Invalid KB value(s): $($badKb -join ', ')" }
     $result.elevated = Test-Elevated
     $result.wu_source = Get-WuSource; Write-Log "WU source: $($result.wu_source)"
