@@ -18,7 +18,10 @@
       Vyjimka: interaktivni rezim (bez -Force) pise vyber/dotazy na konzoli.
 
 .PARAMETER List
-    Pouze vypise aktualizace (JSON). Zadne zmeny.
+    Pouze vypise aktualizace jako tabulku (s -Json jako JSON). Zadne zmeny.
+
+.PARAMETER Json
+    Vystup -List jako JSON misto tabulky (Ansible).
 
 .PARAMETER Since
     Pocatecni datum instalace. Vychozi: pred 30 dny. Nesmi byt v budoucnosti.
@@ -50,6 +53,7 @@
 
 .EXAMPLE
     .\Uninstall-WindowsUpdate.ps1 -List -Since 2026-10-01
+    # tabulka; s -Json jako JSON
 
 .EXAMPLE
     .\Uninstall-WindowsUpdate.ps1 -Filter "*Cumulative*"
@@ -80,6 +84,7 @@
 [CmdletBinding()]
 param (
     [switch]$List,
+    [switch]$Json,
     [datetime]$Since = (Get-Date).AddDays(-30),
     [string]$Filter = '*',
     [string[]]$KB = @(),
@@ -252,7 +257,13 @@ try {
     # ---------------------------------------------------------------- list
     if ($List) {
         $result.updates = $items; $result.msg = "$($items.Count) updates since $($result.since)"; Write-Log $result.msg
-        $result | ConvertTo-Json -Depth 5; exit 0
+        if ($Json) { $result | ConvertTo-Json -Depth 5; exit 0 }
+        # Tabulka pro cloveka (jako Uninstall-MsiPackage); JSON zustava pro Ansible pres -Json.
+        Write-Host "`n$($result.msg) (wu_source: $($result.wu_source), elevated: $($result.elevated))"
+        $items | Format-Table date, @{ n = 'KB'; e = { if ($_.kb) { "KB$($_.kb)" } } }, kind, uninstallable, method,
+            title -AutoSize | Out-String -Width 220 | Write-Host
+        $result.warnings | ForEach-Object { Write-Host "WARNING: $_" }
+        exit 0
     }
 
     # ---------------------------------------------------------------- selection

@@ -7,7 +7,7 @@ Ovladače, definice Defenderu a SSU jen vypíše, neodinstaluje.
 ## Použití
 
 ```
-Uninstall-WindowsUpdate.cmd -List -Since 2026-10-01          # jen výpis (JSON)
+Uninstall-WindowsUpdate.cmd -List -Since 2026-10-01          # výpis (tabulka); -Json pro JSON
 Uninstall-WindowsUpdate.cmd -Filter "*Cumulative*"           # interaktivní výběr + odinstalace
 Uninstall-WindowsUpdate.cmd -Category lcu -List              # filtr podle kind / kategorie WU (např. Drivers)
 Uninstall-WindowsUpdate.cmd -KB 5127648 -Force -DryRun       # dávkově, jen plán příkazů
@@ -23,6 +23,15 @@ Po odinstalaci DISMem není KB do restartu nabízena, proto `-HideOnly` spusťte
 
 Pozor: odinstalace LCU vrací bezpečnostní opravy. Aktualizaci potom skryjte (`-Hide`) nebo pozastavte,
 jinak ji Windows Update nainstaluje znovu. Pod WSUS / WUfB blokujte raději na serveru.
+
+## Instalace
+
+```
+git clone --recurse-submodules https://github.com/dnemecek/uninstall-windowsupdate.git
+```
+
+Bez `--recurse-submodules` zůstane `common/` prázdná a skript selže na chybějícím `Add-Log.ps1`.
+Git na Windows: `winget install --id Git.Git -e --source winget`.
 
 ## Struktura
 
